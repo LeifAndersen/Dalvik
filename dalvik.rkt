@@ -217,8 +217,9 @@
               κ sm)]
       [`(invoke ,name ,args ...)
        ; =>
-       ; TODO
-       ]
+       (apply-method (find-method 'not-done name)
+                     ; TODO
+                     )]
       [`(invoke-super ,name ,args ...)
        ; =>
        ; TODO
