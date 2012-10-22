@@ -40,8 +40,562 @@
 ;       |  aexp.field-name
 ;
 
-(define (parse program)
-  program)
+; Using the code from:
+; http://matt.might.net/articles/parsing-with-derivatives/
+
+(require srfi/41) ; Stream library
+(require test-engine/racket-tests)
+
+; Generic tools:
+(define-syntax while
+  (syntax-rules ()
+    [(_ cond body ...)
+     ; =>
+     (letrec ((lp (lambda () (when cond body ... (lp)))))
+       (lp))]))
+
+(define-syntax define/fix
+  (syntax-rules ()
+    [(_ (f x) #:bottom bottom body ...)
+     ; =>
+     (define f (let ((cache     (make-weak-hasheq))
+                     (changed?  (make-parameter 'error-changed))
+                     (running?  (make-parameter #f))
+                     (visited   (make-parameter 'error-visited)))
+                 (lambda (x)
+                   (let ((cached? (hash-has-key? cache x))
+                         (cached  (hash-ref cache x (lambda () bottom)))
+                         (run?    (running?)))
+                     (cond
+                       [(and cached? (not run?))
+                        ; =>
+                        cached]
+                       
+                       [(and run? (hash-has-key? (unbox (visited)) x))
+                        ; =>
+                        (if cached? cached bottom)]
+                       
+                       [run? 
+                        ; =>
+                        (hash-set! (unbox (visited)) x #t)
+                        (let ((new-val (begin body ...)))
+                          (when (not (equal? new-val cached))
+                            (set-box! (changed?) #t)
+                            (hash-set! cache x new-val))
+                          new-val)]
+                       
+                       [(and (not cached?) (not run?))
+                        ; =>
+                        (parameterize ([changed? (box #t)]
+                                       [running? #t]
+                                       [visited (box (make-weak-hasheq))])
+                          (let ([v bottom])
+                            (while (unbox (changed?))
+                                   (set-box! (changed?) #f)
+                                   (set-box! (visited) (make-weak-hasheq))
+                                   (set! v (f x)))
+                            v))])))))]))
+
+(define-syntax make-weak-hash-trie
+  (syntax-rules ()
+    [(_ #:eq eq ...)      (make-weak-hasheq)]
+    [(_ #:eqv eq ...)     (make-weak-hasheqv)]
+    [(_ #:equal eq ...)   (make-weak-hash)]))
+
+(define-syntax weak-hash-trie-get!
+  (syntax-rules ()
+    [(_ t [eq] [x] lazy-val)
+     ; =>
+     (let ([$t t]
+           [$x x])
+       (if (hash-has-key? $t $x)
+           (hash-ref $t $x)
+           (let ([val lazy-val])
+             (hash-set! $t $x val)
+             val)))]
+    
+    [(_ t [eq1 eq2 eq3 ...] [x1 x2 x3 ...] lazy-val)
+     ; =>
+     (let ([$t t])
+       (if (hash-has-key? $t x1)
+           (let ([t2 (hash-ref t x1)])
+             (weak-hash-trie-get! t2 [eq2 eq3 ...] [x2 x3 ...] lazy-val))
+           (let ([t2 (make-weak-hash-trie eq2 eq3 ...)])
+             (hash-set! $t x1 t2)
+             (weak-hash-trie-get! t2 [eq2 eq3 ...] [x2 x3 ...] lazy-val))))]))
+ 
+(define-syntax define/memoize 
+  (syntax-rules ()
+    [(_ (f [v eq] ...) body ...)
+     ; =>
+     (define/memoize (f v ...) #:order ([v eq] ...) body ...)]
+    
+    [(_ (f v ...) #:order ([v* eq] ...) body ...)
+     ; =>
+     (define f (let ((cache (make-weak-hash-trie eq ...))
+                     ($f    (lambda (v ...) (let ([v* v] ...) body ...))))
+                 (lambda (v ...)
+                   (let ([v* v] ...)
+                     (weak-hash-trie-get! cache [eq ...] [v ...] ($f v ...))))))]
+    
+    [(_ (f v ...) body ...)
+     ; =>
+     (define/memoize (f [v #:equal] ...) body ...)]))
+    
+; Languages:
+(define-struct language ())
+
+; Atomic languages:
+(define-struct (empty language) ())           ; empty set
+(define-struct (eps   language) ())           ; empty string
+(define-struct (token language) (pred class)) ; terminal
+
+; Compound languages:
+(define-struct (compound-language language)      ())
+(define-struct (union         compound-language) (this that))
+(define-struct (concatenation compound-language) (left right))
+(define-struct (reduction     compound-language) (lang reduce))
+
+; Special symbols that can only appear during parsing:
+(define-struct (eps*  eps)  (tree-set)) ; empty string that produces a tree
+
+; Constructors:
+(define-syntax cat
+  (syntax-rules ()
+    [(_)            (eps)]
+    [(_ l1)         l1]
+    [(_ l1 l2 ...)  (concatenation (delay l1) (delay (cat l2 ...)))]))
+
+(define-syntax alt
+  (syntax-rules ()
+    [(_)            (empty)]
+    [(_ l1)         l1]
+    [(_ l1 l2 ...)  (union (delay l1) (delay (alt l2 ...)))]))
+
+(define-syntax red
+  (syntax-rules ()
+    [(_ l f)        (reduction (delay l) f)]))
+
+(define-syntax lang
+  (syntax-rules (or quote seq --> empty reduction eps ?)
+    [(_)                  (empty)]
+    [(_ (eps))            (eps)]
+    [(_ (empty))          (empty)]
+    [(_ (? pred class))   (token pred class)]
+    [(_ (quote lit))      (token (lambda (t) (equal? t 'lit)) 'lit)]
+    
+    [(_ (or))             (empty)]
+    [(_ (or l1))          (lang l1)]
+    [(_ (or l1 l2 ...))   (alt (lang l1) (lang (or l2 ...)))]
+    
+    [(_ (seq))            (eps)]
+    [(_ (seq l1))         (lang l1)]
+    [(_ (seq l1 l2 ...))  (cat (lang l1) (lang (seq l2 ...)))]
+    
+    [(_ (--> l f))        (red (lang l) f)]
+                
+    [(_ var)              var]))
+    
+; Pattern-matchers on languages:
+(define-match-expander orp
+  (syntax-rules ()
+    [(_ l1 l2) (union (app force l1) (app force l2))]))
+
+(define-match-expander seqp
+  (syntax-rules ()
+    [(_ l1 l2) (concatenation (app force l1) (app force l2))]))
+
+(define-match-expander redp
+  (syntax-rules ()
+    [(_ l f) (reduction (app force l) f)]))
+
+(define-match-expander nullablep?
+  (syntax-rules ()
+    [(_) (app nullable? #t)]))
+
+; Parse a stream into a tree:    
+(define (parse l s #:compact [compact (lambda (x) x)] #:steps [n #f] #:debug [debug? #f])
+  (cond
+    [(and n (= n 0)) l]
+    [(stream-null? s) (parse-null l)]
+    [else             
+     ; =>
+     (let* ([c      (stream-car s)]
+            [rest   (stream-cdr s)]
+            [dl/dc  (parse-derive c l)]
+            [l*     (compact dl/dc)])
+       (when debug?
+         (display (format "size: ~s; mem: ~s~n" (language-size l*) (current-memory-use))))
+       (parse l* rest
+              #:compact compact
+              #:steps   (and n (- n 1))
+              #:debug   debug?))]))
+
+(define (parse-null/input l input)
+  (list->stream (set-map (parse-null l) (lambda (el) (cons el input)))))
+
+; Nullability:
+(define/fix (nullable? l)
+  #:bottom #f
+  (match l
+    [(empty)           #f]
+    [(eps)             #t]    
+    [(token _ _)       #f]
+    [(orp l1 l2)       (or (nullable? l1) (nullable? l2))]
+    [(seqp l1 l2)      (and (nullable? l1) (nullable? l2))]
+    [(redp l1 _)       (nullable? l1)]))
+
+; Parse trees for nullability:
+(define empty-tree-set (set))
+
+(define/fix (parse-null l)
+  #:bottom empty-tree-set
+  (match l
+    [(empty)        empty-tree-set]
+    [(eps* S)       S]
+    [(eps)          (set l)]
+    [(token _ _)    empty-tree-set]
+    [(orp l1 l2)    (set-union (parse-null l1) (parse-null l2))]
+    [(seqp l1 l2)   (for*/set ([t1 (parse-null l1)]
+                               [t2 (parse-null l2)])
+                              (cons t1 t2))]
+    [(redp l1 f)    (for/set ([t (parse-null l1)])
+                             (f t))]))
+
+; Derivative of a parser combinator:
+(define/memoize (parse-derive c l)
+  #:order ([l #:eq] [c #:equal])
+  (match l
+    [(empty)     (empty)]
+    [(eps)       (empty)]
+    [(token pred class)
+     ; =>
+     (if (pred c) (eps* (set c)) (empty))]
+    
+    [(orp l1 l2)
+     ; =>
+     (alt (parse-derive c l1) 
+          (parse-derive c l2))]
+    
+    [(seqp (and (nullablep?) l1) l2)
+     ; =>
+     (alt (cat (eps* (parse-null l1)) (parse-derive c l2))
+          (cat (parse-derive c l1) l2))]
+    
+    [(seqp l1 l2)
+     ; =>
+     (cat (parse-derive c l1) l2)]
+    
+    [(redp l f)
+     ; =>
+     (red (parse-derive c l) f)]))
+
+; Derivative of a context-free language:
+(define/memoize (derive c l)
+  #:order ([l #:eq] [c #:equal])
+  (match l
+    [(empty)
+     ; =>
+     (empty)]
+    
+    [(eps)
+     ; =>
+     (empty)]
+    
+    [(token pred class)
+     ; =>
+     (if (pred c) (eps) (empty))]
+    
+    [(orp l1 l2)
+     ; =>
+     (alt (derive c l1) 
+          (derive c l2))]
+    
+    [(seqp (and (nullablep?) l1) l2)
+     ; =>
+     (alt (derive c l2)
+          (cat (derive c l1) l2))]
+    
+    [(seqp l1 l2)
+     ; =>
+     (cat (derive c l1) l2)]
+    
+    [(redp l f)
+     ; =>
+     (derive c l)]))
+
+; Recognizes if a string is in a language:
+(define (recognizes? l s)
+  (cond
+    [(stream-null? s) (nullable? l)]
+    [else             (recognizes?
+                       (derive (stream-car s) l)
+                       (stream-cdr s))]))
+
+; Partially parse a stream; return sub-parses:
+(define (parse-partial l s) 
+  (if (stream-null? s)
+      (parse-null/input l stream-null)
+      (match l 
+        [(empty)      stream-null]
+        [(eps)        (stream (cons (eps) s))]
+        [(eps* S)     (parse-null/input l s)]
+        [(token p c)
+         ; =>
+         (cond
+           [(p (stream-car s)) (stream-cons (cons (stream-car s) (stream-cdr s))
+                                            stream-null)]
+           [else               stream-null])]
+        [else
+         ; =>
+         (define c (stream-car s))
+         (define rest (stream-cdr s))
+         (stream-stitch (parse-partial (parse-derive c l) rest)
+                        (parse-null/input l s))])))
+                      
+; Stream stitching:
+(define (stream-stitch s1 s2 #:even [even? #t])
+  (define (pull-s1) (stream-cons (stream-car s1) (stream-stitch (stream-cdr s1) s2 #:even (not even?))))
+  (define (pull-s2) (stream-cons (stream-car s2) (stream-stitch s1 (stream-cdr s2) #:even (not even?))))
+  (cond
+    [(and even? (not (stream-null? s1))) (pull-s1)]
+    [(and even? (not (stream-null? s2))) (pull-s2)]
+    [even?                               stream-null]
+    [(not (stream-null? s2))             (pull-s2)]
+    [(not (stream-null? s1))             (pull-s1)]
+    [else                                stream-null]))
+
+; Checks whether a language is the empty string:
+(define/fix (is-null? l)
+  #:bottom #t
+  (match l
+    [(empty)           #f]
+    [(eps)             #t]    
+    [(token _ _)       #f]
+    [(orp l1 l2)       (and (is-null? l1)  (is-null? l2))]
+    [(seqp l1 l2)      (and (is-null? l1)  (is-null? l2))]
+    [(redp l1 _)       (is-null? l1)]))
+
+(define-match-expander nullp
+  (syntax-rules ()
+    [(_)    (app is-null? #t)]
+    [(_ el) (and (app is-null? #t) (app parse-null (and (? singleton?) (app set-choose el))))]))
+
+; Checks whether a language is the empty set:
+(define/fix (is-empty? l)
+  #:bottom #t
+  (match l
+    [(empty)           #t]
+    [(eps)             #f]    
+    [(token _ _)       #f]
+    [(orp l1 l2)       (and (is-empty? l1)  (is-empty? l2))]
+    [(seqp l1 l2)      (or  (is-empty? l1)  (is-empty? l2))]
+    [(redp l1 _)       (is-empty? l1)]))
+
+(define-match-expander emptyp
+  (syntax-rules ()
+    [(_) (app is-empty? #t)]))
+
+
+(define (set-size s)
+  (define size 0)
+  (for ([_ s])
+    (set! size (+ size 1)))
+  size)
+
+(define (singleton? s)
+  (eqv? (set-size s) 1))
+
+(define (set-choose s)
+  (define el #f)
+  (for ([el* s])
+    (set! el el*))
+  el)
+  
+; Performs algebraic reductions on a grammar:
+(define/memoize (compact [l #:eq])
+  (match l
+    [(empty)       l]
+    [(eps)         l]
+    [(emptyp)      (empty)]
+    [(nullp)       (eps* (parse-null l))]
+    [(token p c)   l]
+
+    [(orp (emptyp) l2)  (compact l2)]
+    [(orp l1 (emptyp))  (compact l1)]
+    
+    [(seqp (nullp t) l2)  (red (compact l2) (lambda (w2) (cons t w2)))]
+    [(seqp l1 (nullp t))  (red (compact l1) (lambda (w1) (cons w1 t)))]
+    
+    [(orp l1 l2)   (alt (compact l1) (compact l2))]
+    [(seqp l1 l2)  (cat (compact l1) (compact l2))]
+    
+    [(redp (emptyp) _)  (empty)]
+    
+    [(redp (and e (nullp)) f) 
+     ; =>
+     (eps* (for/set ([t (parse-null e)]) (f t)))]
+    
+    [(redp (seqp (nullp t) l2) f)
+     ; =>
+     (red (compact l2) (lambda (w2) (f (cons t w2))))]
+    
+    [(redp (redp l f) g) 
+     ; =>
+     (red (compact l) (compose g f))]
+        
+    [(redp l f)    (red (compact l) f)]))
+    
+
+  
+
+
+
+;;;; Debugging.
+
+; Gives every object a unique value:
+(define mark-of-beast 
+  (let* ([index (make-hasheq)]
+         [max   0]
+         [next  (lambda ()
+                  (set! max (+ max 1))
+                  max)])
+    (lambda (object)
+      (if (hash-has-key? index object)
+          (hash-ref index object)
+          (begin
+            (hash-set! index object (next))
+            (mark-of-beast object))))))
+
+; Allows recursive functions on graphs by
+; turning them into graph searches:
+(define-syntax define/search 
+  (syntax-rules ()
+    [(_ (f x rest ...) #:reentry default body ...)
+     ; =>
+     (define f (let ([visited (make-parameter #f)]
+                     [$def    default])
+                 (lambda (x rest ...)
+                   (cond
+                     [(not (visited))
+                      ; =>
+                      (parameterize ([visited (make-hasheq)])
+                        (f x rest ...))]
+                     
+                     [(hash-has-key? (visited) x)
+                      ; =>
+                      (if (procedure? $def) ($def x) $def)]
+                     
+                     [else 
+                      ; =>
+                      (hash-set! (visited) x #t)
+                      (let () body ...)]))))]
+    
+    [(_ (f x rest ...) body ...)
+     ; =>
+     (define/search (f x rest ...) #:reentry (lambda (x) (void)) body ...)]))
+
+; Computes the size of a grammar.
+(define/search (language-size l) 
+  #:reentry 0
+  (match l
+    [(or (eps) (token _ _) (empty))   1]
+    [(or (seqp l1 l2) (orp l1 l2))    (+ 1 (language-size l1)
+                                           (language-size l2))]
+    [(redp l f)                       (+ 1 (language-size l))]))
+     
+; Outputs a grammar as a dot file.
+(define (dotify l #:port [port (current-output-port)])
+  
+  (define/search (dotify-nodes l port)
+    (define m (mark-of-beast l))
+    (match l
+      [(empty) 
+       ; =>
+       (display (format "\"~s\" [label = \"empty\"~n];~n~n" m) port)]
+      
+      [(eps* S)
+       ; =>
+       (display (format "\"~s\" [shape = \"record\", label = \"eps* | ~v\"~n];~n~n" m S) port)]
+      
+      [(eps)
+       ; =>
+       (display (format "\"~s\" [label = \"eps\"~n];~n~n" m) port)]
+      
+      [(token _ c)
+       ; =>
+       (display (format "\"~s\" [shape = \"record\", label = \"token | ~s\"~n];~n~n" m c) port)]
+      
+      [(orp l1 l2)
+       ; =>
+       (define m1 (mark-of-beast l1))
+       (define m2 (mark-of-beast l2))
+       (display (format "\"~s\" [label = \"or\"~n];~n~n" m) port)
+       (dotify-nodes l1 port)
+       (dotify-nodes l2 port)
+       (display (format "\"~s\" -> \"~s\" [~n];~n~n" m m1) port)
+       (display (format "\"~s\" -> \"~s\" [~n];~n~n" m m2) port)]
+      
+      [(seqp l r)
+       ; =>
+       (define ml (mark-of-beast l))
+       (define mr (mark-of-beast r))
+       (display (format "\"~s\" [shape=\"none\", margin=0, label = <~n<table border=\"0\" cellborder=\"1\" cellspacing=\"0\" cellpadding=\"4\"><tr><td colspan=\"2\">seq</td></tr><tr><td port=\"L\">L</td><td port=\"R\">R</td></tr></table>>~n];~n~n" m) port)
+       (dotify-nodes l port)
+       (dotify-nodes r port)
+       (display (format "\"~s\":L -> \"~s\" [~n];~n~n" m ml) port)
+       (display (format "\"~s\":R -> \"~s\" [~n];~n~n" m mr) port)]
+      
+      [(redp l f)
+       ; =>
+       (define ml (mark-of-beast l))
+       (display (format "\"~s\" [label = \"red\"~n];~n~n" m) port)
+       (dotify-nodes l port)
+       (display (format "\"~s\" -> \"~s\" [~n];~n~n" m ml) port)]))
+  
+  (define close-port? #f)
+  
+  (when (string? port)
+    (set! close-port? #t)
+    (set! port (open-output-file port #:mode 'text #:exists 'replace)))
+  
+  (display (format "digraph {~n~n") port)
+  (display (format "node [];~n") port)
+  (dotify-nodes l port)
+  (display (format "\"~s\" [shape = \"doublecircle\"~n];~n" (mark-of-beast l)) port)
+  (display (format "~n}") port)
+  
+  (when close-port?
+    (close-output-port port)))
+           
+
+  
+
+; Converts a grammar into a tree:
+(define (language-to-tree l [seen (make-hasheq)])
+  
+  (define (seen?) (hash-has-key? seen l))
+  
+  (define (mark) (hash-set! seen l #t))
+  
+  (if (seen?)
+      '-
+      (begin 
+        (mark)
+        (match l
+          [(empty)          '(empty)]
+          [(eps* S)         `(eps* ,@(for/list ((s S)) s))]
+          [(eps)            '(eps)]
+          [(token _ class)   (list 'token class)]
+          [(seqp l1 l2)     `(seq ,(language-to-tree l1 seen)
+                                  ,(language-to-tree l2 seen))]
+          [(orp l1 l2)      `(or  ,(language-to-tree l1 seen)
+                                  ,(language-to-tree l2 seen))]
+          [(redp l1 f)      `(red ,(language-to-tree l1 seen))]))))
+
+
+(define (parse-program program)
+  (parse program 'put-language-here)
 
 ; Parsed language
 ; program ::= class-def
@@ -81,7 +635,8 @@
 
 
 (struct statement {stmt
-                   next})
+                   next
+                   class})
 
 (struct state {statement
                frame-pointer
@@ -217,12 +772,12 @@
               κ sm)]
       [`(invoke ,name ,args ...)
        ; =>
-       (apply-method (find-method 'not-done name)
-                     ; TODO
-                     )]
+       (apply-method (find-method (statement-class stmt) name)
+                     name 'not-done ς)]
       [`(invoke-super ,name ,args ...)
        ; =>
-       ; TODO
+       (apply-method (find-method (class-extends (statement-class stmt)) name)
+                     name 'not-done ς)]
        ]
       [`(return ,value)
        ; =>
@@ -242,4 +797,5 @@
     (step* (state program fp0 σ0 'halt sm))))
 
 (define (run program)
-  (execute (parse program)))
+  (execute (parse-program program)))
+
