@@ -727,11 +727,45 @@
               (error (format "unbound method: ~a" m))))
         m*)))
 
-(define apply-method m name val ς
-  ; TODO
-  )
+(define (apply-method-helper m name val e fp σ κ sm)
+  (if (equal? e '())
+      (state (method-body m) fp σ κ)
+      (let ([s (apply-method-helper m name val (cdr e) fp κ)])
+        (state (state-statement s)
+               (state-frame-pointer s)
+               (λ (fp* arg)
+                  (if (equal? fp fp*)
+                      (if (equal? (car e) arg) ;; TODO Not just car
+                          (eval-atom (car e) fp σ)
+                          (σ fp* arg))
+                      (σ fp* arg)))
+               (state-continuation s)
+               (state-statement-map s)))))
 
-(define apply-kont κ val store
+(define (apply-method m name val e fp σ κ sm)
+  (if (equal? e '())
+      (state (method-body m)
+             (gensym 'fp)
+             (λ (fp* arg)
+                (if (equal? fp fp*)
+                    (if (equal? arg '$this)
+                        val
+                        (σ fp* arg))
+                    (σ fp* arg)))
+             (`(assign ,name not-done fp κ)))
+      (let ([s (apply-method-helper m name val (cdr e) (gensym 'fp) κ)])
+        (state (state-statement s)
+               (state-frame-pointer s)
+               (λ (fp* arg)
+                  (if (equal? fp fp*)
+                      (if (equal? arg '$this)
+                          val
+                          (σ fp* arg))
+                      (σ fp* arg)))
+               (state-continuation s)
+               (state-statement-map s)))))
+
+(define (apply-kont κ val store)
   ; TODO
   )
 
