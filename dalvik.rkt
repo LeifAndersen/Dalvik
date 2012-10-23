@@ -655,6 +655,10 @@
                 body
                 next})
 
+(struct handle {class-name
+                label
+                κ})
+
 ; atom? exp -> boolean?
 (define (atom? exp)
   (match exp
@@ -685,10 +689,6 @@
     [(? boolean?) atom]
     [(? integer?) atom]
     [else #f]))
-
-(define (eval-object object fp σ)
-  ; TODO
-  )
 
 (define (generate-statement-map-helper program sm)
   (match program
@@ -734,10 +734,8 @@
         (state (state-statement s)
                (state-frame-pointer s)
                (λ (fp* arg)
-                  (if (equal? fp fp*)
-                      (if (equal? (car v) arg)
-                          (eval-atom (car e) fp σ)
-                          (σ fp* arg))
+                  (if (equal? `(,fp ,(car v) `(,fp* ,arg)))
+                      (eval-atom (car e) fp σ)
                       (σ fp* arg)))
                (state-continuation s)
                (state-statement-map s)))))
@@ -747,10 +745,8 @@
       (state (method-body m)
              (gensym 'fp)
              (λ (fp* arg)
-                (if (equal? fp fp*)
-                    (if (equal? arg '$this)
-                        val
-                        (σ fp* arg))
+                (if (equal? `(,fp $this) `(,fp* ,arg))
+                    val
                     (σ fp* arg)))
              (`(assign ,name ,s ,fp ,κ))
              sm)
@@ -758,21 +754,30 @@
         (state (state-statement st)
                (state-frame-pointer st)
                (λ (fp* arg)
-                  (if (equal? fp fp*)
-                      (if (equal? arg '$this)
-                          val
-                          (σ fp* arg))
+                  (if (equal? `(,fp $this) `(,fp* ,arg))
+                      val
                       (σ fp* arg)))
                (`(assign ,name ,s ,fp ,(state-continuation st)))
                (state-statement-map st)))))
 
 (define (apply-kont κ val store)
-  ; TODO
-  )
+  (match κ
+    [`(assign ,name ,s ,fp ,κ)
+     ; =>
+     'todo]
+    [`(handle ,class-name ,label ,κ)
+     ; =>
+     'todo]
+    ['halt
+     ; =>
+     'todo]))
+
+(define (handle-func s fp σ κ)
+  'todo)
 
 (define (step ς)
-  (let ([stmt (state-statement)]
-        [fp (state-frme-pointer ς)]
+  (let ([stmt (state-statement ς)]
+        [fp (state-frame-pointer ς)]
         [σ (state-store ς)]
         [κ (state-continuation ς)]
         [sm (state-statement-map ς)])
@@ -793,31 +798,38 @@
            (state (statement-next stmt) fp σ κ sm))]
       [`(:= ,name ,e)
        ; =>
-       (state (statement-next stmt) fp ((λ addr)
-                                        (if (equal? addr name)
-                                            (eval-atom e fp σ)
-                                            (σ addr)))
+       (state (statement-next stmt) fp (λ (fp* var)
+                                          (if (equal? `(,fp ,name) `(,fp* var))
+                                              (eval-atom e fp σ)
+                                              (σ fp var)))
               κ sm)]
-      [`(:=-new ,name ,obj-name)
+      [`(:=-new ,name ,class-name)
        ; =>
        (state (statement-next stmt) fp ((λ addr)
                                         (if (equal? addr name)
-                                            (eval-object obj-name fp σ)
+                                            `(,class-name ,(gensym 'op))
                                             (σ addr)))
               κ sm)]
       [`(invoke ,name ,args ...)
        ; =>
-       (apply-method (find-method (statement-class stmt) name)
-                     name 'not-done ς)]
+       (let ([m (find-method (statement-class stmt))])
+         (apply-method m name (σ fp '$this) (method-args m) (statement-next stmt) fp σ κ sm))]
       [`(invoke-super ,name ,args ...)
+       (let ([m (find-method (class-extends (statement-class stmt)))])
+         (apply-method m name (σ fp '$this) (method-args m) (statement-next stmt) fp σ κ sm))]
        ; =>
-       (apply-method (find-method (class-extends (statement-class stmt)) name)
-                     name 'not-done ς)]
-       ]
-      [`(return ,value)
+      [`(return ,e)
        ; =>
-       ; TODO
-       ]
+       (apply-kont κ (eval-atom e fp σ) σ)]
+      [`(push-handler ,class-name ,label)
+       ; =>
+       (state (statement-next stmt) fp σ (handle class-name label κ))]
+      [`(pop-handler)
+       ; =>
+       (state (statement-next stmt) fp σ (handle-κ κ))]
+      [`(throw ,e)
+       ; =>
+       (handle_func (eval-atom e fp σ) fp σ κ)]
       [else #f]))))
 
 (define (step* ς)
