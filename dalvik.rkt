@@ -595,7 +595,7 @@
 
 
 (define (parse-program program)
-  (parse program 'put-language-here)
+  (parse program 'put-language-here))
 
 ; Parsed language
 ; program ::= class-def
@@ -697,7 +697,7 @@
     [`(def ,m)
      (generate-statement-map-helper (method-next m) (generate-statement-map-helper (method-body m) sm) sm)]
     [(cons `(label ,label) rest)
-     (generate-statement-map-helper rest ((λ label*)
+     (generate-statement-map-helper rest (λ (label*)
                                           (if (equal? label label*)
                                               program
                                               (sm label*))))]
@@ -708,7 +708,7 @@
     [else sm]))
 
 (define (generate-statement-map program)
-  (generate-statement-map-helper ((λ label) (error (format "unbound statement: ~a" label)))))
+  (generate-statement-map-helper program (λ (label) (error (format "unbound statement: ~a" label)))))
 
 (define (find-method-helper m* m)
   (let ([name (method-name m*)])
@@ -724,7 +724,8 @@
     (if (equal? m* null)
         (let ([e (class-extends c)])
           (if (equal? e null)
-              (error (format "unbound method: ~a" m))))
+              (error (format "unbound method: ~a" m))
+              (find-method e m)))
         m*)))
 
 (define (apply-method-helper m name val v e fp σ κ sm)
@@ -774,7 +775,7 @@
      (apply-kont κ val σ)]
     ['halt
      ; =>
-     (state '() fp σ 'halt sm)]))
+     (state null null σ 'halt sm)]))
 
 (define (subclass? c c*)
   (if (equal? c c*)
@@ -782,22 +783,26 @@
       (let ([c** (class-extends c)])
         (if (equal? c** null)
           #f
-          (subclass c** c*)))))
+          (subclass? c** c*)))))
 
-(define (handle-func val fp σ κ sm)
+(define (handle* val fp σ κ sm)
   (match κ
     [`(handle ,class-name* ,label ,κ)
-     (let ([`(,op ,class-name) val])
+     (let ([op (car val)]
+           [class-name (cadr val)])
        (if (subclass? class-name class-name*)
            (state (sm label) fp (λ (fp* val*)
                                    (if (equal? `(,fp $ex) `(,fp* ,val*))
                                        val
                                        (σ fp* val)))
                   κ sm)
-           (handle-func val fp σ κ sm)))]
+           (handle* val fp σ κ sm)))]
     [`(assign ,name ,s ,fp* ,κ)
-     (handle-func val fp* σ κ sm)]
+     (handle* val fp* σ κ sm)]
     [else #f]))
+
+(define (find-main program)
+  'todo)
 
 (define (step ς)
   (let ([stmt (state-statement ς)]
@@ -829,7 +834,7 @@
               κ sm)]
       [`(:=-new ,name ,class-name)
        ; =>
-       (state (statement-next stmt) fp ((λ addr)
+       (state (statement-next stmt) fp (λ (addr)
                                         (if (equal? addr name)
                                             `(,class-name ,(gensym 'op))
                                             (σ addr)))
@@ -853,11 +858,11 @@
        (state (statement-next stmt) fp σ (handle-kont κ))]
       [`(throw ,e)
        ; =>
-       (handle-func (eval-atom e fp σ) fp σ κ) sm]
+       (handle* (eval-atom e fp σ) fp σ κ) sm]
       [`(move-exception ,name)
        ; =>
        (state (statement `(:= name $ex) (statement-next stmt)) fp σ κ sm)]
-      [else #f]))))
+      [else #f])))
 
 (define (step* ς)
   (if (state? ς)
@@ -865,11 +870,14 @@
       (step* ς)))
 
 (define (execute program)
-  (let ([fp0 'not-done]
-        [σ0 ((λ addr) (error (format "unbound address: ~a" addr)))]
+  (let ([fp0 (gensym 'fp)]
+        [σ0 (λ (addr) (error (format "unbound address: ~a" addr)))]
         [sm (generate-statement-map program)])
-    (step* (state program fp0 σ0 'halt sm))))
+    (step* (state (find-main program) fp0 σ0 'halt sm))))
 
 (define (run program)
   (execute (parse-program program)))
 
+;; Test program (pre-parsed)
+
+(execute (class 'Foo null null (method 'main '(args) null null) null))
