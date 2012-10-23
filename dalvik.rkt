@@ -657,7 +657,7 @@
 
 (struct handle {class-name
                 label
-                κ})
+                kont})
 
 ; atom? exp -> boolean?
 (define (atom? exp)
@@ -760,20 +760,44 @@
                (`(assign ,name ,s ,fp ,(state-continuation st)))
                (state-statement-map st)))))
 
-(define (apply-kont κ val store)
+(define (apply-kont κ val σ sm)
   (match κ
     [`(assign ,name ,s ,fp ,κ)
      ; =>
-     'todo]
-    [`(handle ,class-name ,label ,κ)
+     (state s fp (λ (fp* name*)
+                    (if (equal? `(,fp ,name) `(,fp* ,name*))
+                        val
+                        (σ fp* name*)))
+                    κ)]
+    [`(handle ,class-name ,label ,κ sm)
      ; =>
-     'todo]
+     (apply-kont κ val σ)]
     ['halt
      ; =>
-     'todo]))
+     (state '() fp σ 'halt sm)]))
 
-(define (handle-func s fp σ κ)
-  'todo)
+(define (subclass? c c*)
+  (if (equal? c c*)
+      #t
+      (let ([c** (class-extends c)])
+        (if (equal? c** null)
+          #f
+          (subclass c** c*)))))
+
+(define (handle-func val fp σ κ sm)
+  (match κ
+    [`(handle ,class-name* ,label ,κ)
+     (let ([`(,op ,class-name) val])
+       (if (subclass? class-name class-name*)
+           (state (sm label) fp (λ (fp* val*)
+                                   (if (equal? `(,fp $ex) `(,fp* ,val*))
+                                       val
+                                       (σ fp* val)))
+                  κ sm)
+           (handle-func val fp σ κ sm)))]
+    [`(assign ,name ,s ,fp* ,κ)
+     (handle-func val fp* σ κ sm)]
+    [else #f]))
 
 (define (step ς)
   (let ([stmt (state-statement ς)]
@@ -820,16 +844,16 @@
        ; =>
       [`(return ,e)
        ; =>
-       (apply-kont κ (eval-atom e fp σ) σ)]
+       (apply-kont κ (eval-atom e fp σ) σ sm)]
       [`(push-handler ,class-name ,label)
        ; =>
        (state (statement-next stmt) fp σ (handle class-name label κ))]
       [`(pop-handler)
        ; =>
-       (state (statement-next stmt) fp σ (handle-κ κ))]
+       (state (statement-next stmt) fp σ (handle-kont κ))]
       [`(throw ,e)
        ; =>
-       (handle_func (eval-atom e fp σ) fp σ κ)]
+       (handle-func (eval-atom e fp σ) fp σ κ) sm]
       [else #f]))))
 
 (define (step* ς)
