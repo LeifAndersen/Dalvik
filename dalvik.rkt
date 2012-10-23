@@ -685,10 +685,10 @@
 ; eval-atom : aexp fp store -> value
 (define (eval-atom atom fp σ)
   (match atom
-    [(? symbol?)  (σ (fp atom))]
+    [(? symbol?)  (σ fp atom)]
     [(? boolean?) atom]
     [(? integer?) atom]
-    [else #f]))
+    [else atom]))
 
 (define (generate-statement-map-helper program sm)
   (match program
@@ -854,6 +854,9 @@
       [`(throw ,e)
        ; =>
        (handle-func (eval-atom e fp σ) fp σ κ) sm]
+      [`(move-exception ,name)
+       ; =>
+       (state (statement `(:= name $ex) (statement-next stmt)) fp σ κ sm)]
       [else #f]))))
 
 (define (step* ς)
