@@ -676,7 +676,7 @@
 ; prim? symbol? -> boolean?
 (define (prim? exp)
   (case exp
-    [(+ - * void) #t]
+    [(+ - * = void) #t]
     [else         #f]))
 
 ; prim->proc : symbol? -> procedure?
@@ -685,6 +685,7 @@
     ['+       +]
     ['-       -]
     ['*       *]
+    ['=       =]
     ['void void]))
 
 ; eval-atom : aexp fp store -> value
@@ -933,15 +934,36 @@
 ;           null))
 
 ; Should print out 1, 2, 3, ...
+;(execute (class 'Foo null null
+;           (method 'main '(args)
+;                   (statement '(:= x 1)
+;                              (statement '(label bob)
+;                                         (statement '(print-debug x)
+;                                                    (statement '(:= x (+ x 1))
+;                                                              (statement '(goto bob)
+;                                                                         (statement null null 'Foo)
+;                                                                         'Foo)
+;                                                              'Foo)
+;                                                    'Foo)
+;                                         'Foo)
+;                              'Foo)
+;                   null)
+;           null))
+
+; Should print out 1, 2, 3, ..., 10
 (execute (class 'Foo null null
            (method 'main '(args)
                    (statement '(:= x 1)
-                              (statement '(label bob)
+                              (statement '(label loop)
                                          (statement '(print-debug x)
                                                     (statement '(:= x (+ x 1))
-                                                              (statement '(goto bob)
-                                                                         (statement null null 'Foo)
-                                                                         'Foo)
+                                                               (statement '(if (= x 11) end) 
+                                                                          (statement '(goto loop)
+                                                                                     (statement '(label end)
+                                                                                                (statement null null 'Foo)
+                                                                                                'Foo)
+                                                                                     'Foo)
+                                                                          'Foo)
                                                               'Foo)
                                                     'Foo)
                                          'Foo)
