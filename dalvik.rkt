@@ -730,8 +730,8 @@
 
 (define (apply-method-helper m name val v e fp σ κ sm)
   (if (equal? e '())
-      (state (method-body m) fp σ κ)
-      (let ([s (apply-method-helper m name val (cdr v) (cdr e) fp κ)])
+      (state (method-body m) fp σ κ sm)
+      (let ([s (apply-method-helper m name val (cdr v) (cdr e) fp σ κ sm)])
         (state (state-statement s)
                (state-frame-pointer s)
                (λ (fp* arg)
@@ -751,14 +751,14 @@
                     (σ fp* arg)))
              (`(assign ,name ,s ,fp ,κ))
              sm)
-      (let ([st (apply-method-helper m name val (method-args m) e (gensym 'fp) κ)])
+      (let ([st (apply-method-helper m name val (method-args m) e (gensym 'fp) σ κ sm)])
         (state (state-statement st)
                (state-frame-pointer st)
                (λ (fp* arg)
                   (if (equal? `(,fp $this) `(,fp* ,arg))
                       val
                       (σ fp* arg)))
-               (`(assign ,name ,s ,fp ,(state-continuation st)))
+               `(assign ,name ,s ,fp ,(state-continuation st))
                (state-statement-map st)))))
 
 (define (apply-kont κ val σ sm)
@@ -801,8 +801,21 @@
      (handle* val fp* σ κ sm)]
     [else #f]))
 
+(define (find-main-helper m)
+  (if (equal? m null)
+      null
+      (let ([name (method-name m)])
+        (if (equal? name 'main)
+            m
+            (find-method-helper (method-next m))))))
+
 (define (find-main program)
-  'todo)
+  (if (equal? program null)
+      (error "No main method")
+      (let ([m (find-main-helper (class-method-def program))])
+        (if (equal? m null)
+            (find-main (class-next program))
+            m))))
 
 (define (step ς)
   (let ([stmt (state-statement ς)]
@@ -859,8 +872,7 @@
       [`(throw ,e)
        ; =>
        (handle* (eval-atom e fp σ) fp σ κ) sm]
-      [`(move-exception ,name)
-       ; =>
+      [`(move-exception ,name) ; =>
        (state (statement `(:= name $ex) (statement-next stmt)) fp σ κ sm)]
       [else #f])))
 
@@ -873,7 +885,7 @@
   (let ([fp0 (gensym 'fp)]
         [σ0 (λ (addr) (error (format "unbound address: ~a" addr)))]
         [sm (generate-statement-map program)])
-    (step* (state (find-main program) fp0 σ0 'halt sm))))
+    (step* (apply-method (find-main program) 'main 'main-this '(null) null fp0 σ0 'halt sm))))
 
 (define (run program)
   (execute (parse-program program)))
@@ -881,3 +893,4 @@
 ;; Test program (pre-parsed)
 
 (execute (class 'Foo null null (method 'main '(args) null null) null))
+
