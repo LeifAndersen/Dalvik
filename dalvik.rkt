@@ -880,11 +880,16 @@
        ; =>
        (handle* (eval-atom e fp σ) fp σ κ) sm]
       [`(move-exception ,name) ; =>
-       (state (statement `(:= name $ex) (statement-next stmt)) fp σ κ sm)]
+       (state (statement `(:= name $ex) (statement-next stmt) (statement-class stmt)) fp σ κ sm)]
+      ;; instructions only for debugging
+      [`(print-debug ,a)
+       (print (eval-atom a fp σ))
+       (newline)
+       (state (statement-next stmt) fp σ κ sm)]
       [else #f])))
 
 (define (step* ς)
-  (print ς)
+  (print (format "Machine State: ~a" ς))
   (newline)
   (newline)
   (if (state? ς)
@@ -893,7 +898,7 @@
 
 (define (execute program)
   (let ([fp0 (gensym 'fp)]
-        [σ0 (λ (addr) (error (format "unbound address: ~a" addr)))]
+        [σ0 (λ (fp var) (error (format "unbound address: ~a, ~a" fp var)))]
         [sm (generate-statement-map program)])
     (step* (apply-method (find-main program) 'main 'main-this '(null) null fp0 σ0 'halt sm))))
 
@@ -902,6 +907,7 @@
 
 ;; Test program (pre-parsed)
 
+; Should do nothing
 ;(execute (class 'Foo null null 
 ;           (method 'main '(args)
 ;                   (statement '(skip)
@@ -910,12 +916,30 @@
 ;                   null)
 ;           null))
 
+; Should print out 3 repeatedly
+;(execute (class 'Foo null null
+;           (method 'main '(args)
+;                   (statement '(label bob)
+;                              (statement '(print-debug 3)
+;                                         (statement '(goto bob)
+;                                                    (statement null null 'Foo)
+;                                                    'Foo)
+;                                         'Foo)
+;                              'Foo)
+;                   null)
+;           null))
+
+; Should print out 1, 2, 3, ...
 (execute (class 'Foo null null
            (method 'main '(args)
-                   (statement '(label bob)
-                              ;(statement '(goto bob)
-                                         (statement null null 'Foo)
-                              ;           'Foo)
+                   (statement '(:= x 1)
+                              (statement '(label bob)
+                                         (statement '(print-debug x)
+                                                    (statement '(goto bob)
+                                                               (statement null null 'Foo)
+                                                               'Foo)
+                                                    'Foo)
+                                         'Foo)
                               'Foo)
                    null)
            null))
