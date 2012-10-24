@@ -691,9 +691,10 @@
 ; eval-atom : aexp fp store -> value
 (define (eval-atom atom fp σ)
   (match atom
-    [(? symbol?)  (σ fp atom)]
-    [(? boolean?) atom]
-    [(? integer?) atom]
+    ['null              'null]
+    [(? symbol?)        (σ fp atom)]
+    [(? boolean?)       atom]
+    [(? integer?)       atom]
     [(cons (? prim?) _) ((prim->proc (car atom))
                          (eval-atom (cadr atom) fp σ)
                          (eval-atom (caddr atom) fp σ))]
@@ -780,10 +781,10 @@
                     (if (equal? `(,fp ,name) `(,fp* ,name*))
                         val
                         (σ fp* name*)))
-                    κ)]
+                    κ sm)]
     [`(handle ,class-name ,label ,κ sm)
      ; =>
-     (apply-kont κ val σ)]
+     (apply-kont κ val σ sm)]
     ['halt
      ; =>
      (state null null σ 'halt sm)]))
@@ -893,9 +894,9 @@
       [else #f])))
 
 (define (step* ς)
-  (print (format "Machine State: ~a" ς))
-  (newline)
-  (newline)
+;  (print (format "Machine State: ~a" ς))
+;  (newline)
+;  (newline)
   (if (state? ς)
       (step* (step ς))
       null))
@@ -904,7 +905,7 @@
   (let ([fp0 (gensym 'fp)]
         [σ0 (λ (fp var) (error (format "unbound address: ~a, ~a" fp var)))]
         [sm (generate-statement-map program)])
-    (step* (apply-method (find-main program) 'main 'main-this '(null) null fp0 σ0 'halt sm))))
+    (step* (apply-method (find-main program) 'main 'main-this '(null) (statement null null 'halt) fp0 σ0 'halt sm))))
 
 (define (run program)
   (execute (parse-program program)))
@@ -960,7 +961,7 @@
                                                                (statement '(if (= x 11) end) 
                                                                           (statement '(goto loop)
                                                                                      (statement '(label end)
-                                                                                                (statement null null 'Foo)
+                                                                                                (statement '(return null) null 'Foo)
                                                                                                 'Foo)
                                                                                      'Foo)
                                                                           'Foo)
