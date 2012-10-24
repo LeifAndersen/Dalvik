@@ -636,28 +636,33 @@
 
 (struct statement {stmt
                    next
-                   class})
+                   class}
+  #:transparent)
 
 (struct state {statement
                frame-pointer
                store
                continuation
-               statement-map})
+               statement-map}
+  #:transparent)
 
 (struct class {name
                extends
                field-def
                method-def
-               next})
+               next}
+  #:transparent)
 
 (struct method {name
                 args
                 body
-                next})
+                next}
+  #:transparent)
 
 (struct handle {class-name
                 label
-                kont})
+                kont}
+  #:transparent)
 
 ; atom? exp -> boolean?
 (define (atom? exp)
@@ -692,19 +697,21 @@
 
 (define (generate-statement-map-helper program sm)
   (match program
-    [`(class ,c)
+    [(and c (? class?))
      (generate-statement-map-helper (class-next c) (generate-statement-map-helper (class-method-def c) sm))]
-    [`(def ,m)
-     (generate-statement-map-helper (method-next m) (generate-statement-map-helper (method-body m) sm) sm)]
-    [(cons `(label ,label) rest)
-     (generate-statement-map-helper rest (λ (label*)
-                                          (if (equal? label label*)
-                                              program
-                                              (sm label*))))]
-    [(cons _ rest)
-     (generate-statement-map-helper rest sm)]
-    ['()
-     sm]
+    [(and m (? method?))
+     (generate-statement-map-helper (method-next m) (generate-statement-map-helper (method-body m) sm))]
+    [(and stmt (? statement?))
+     (let ([s (statement-stmt stmt)]
+           [n (statement-next stmt)])
+       (match s
+         [`(label ,label)
+          (generate-statement-map-helper n (λ (label*)
+                                               (if (equal? label label*)
+                                                   n
+                                                   (sm label*))))]
+         [else
+          (generate-statement-map-helper n sm)]))]
     [else sm]))
 
 (define (generate-statement-map program)
@@ -877,9 +884,12 @@
       [else #f])))
 
 (define (step* ς)
+  (print ς)
+  (newline)
+  (newline)
   (if (state? ς)
       (step* (step ς))
-      (step* ς)))
+      null))
 
 (define (execute program)
   (let ([fp0 (gensym 'fp)]
@@ -892,5 +902,20 @@
 
 ;; Test program (pre-parsed)
 
-(execute (class 'Foo null null (method 'main '(args) null null) null))
+;(execute (class 'Foo null null 
+;           (method 'main '(args)
+;                   (statement '(skip)
+;                              (statement null null 'Foo)
+;                              'Foo)
+;                   null)
+;           null))
 
+(execute (class 'Foo null null
+           (method 'main '(args)
+                   (statement '(label bob)
+                              ;(statement '(goto bob)
+                                         (statement null null 'Foo)
+                              ;           'Foo)
+                              'Foo)
+                   null)
+           null))
