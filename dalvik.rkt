@@ -693,6 +693,9 @@
     [(? symbol?)  (σ fp atom)]
     [(? boolean?) atom]
     [(? integer?) atom]
+    [(cons (? prim?) _) ((prim->proc (car atom))
+                         (eval-atom (cadr atom) fp σ)
+                         (eval-atom (caddr atom) fp σ))]
     [else atom]))
 
 (define (generate-statement-map-helper program sm)
@@ -848,16 +851,16 @@
       [`(:= ,name ,e)
        ; =>
        (state (statement-next stmt) fp (λ (fp* var)
-                                          (if (equal? `(,fp ,name) `(,fp* var))
+                                          (if (and (equal? fp fp*) (equal? name var))
                                               (eval-atom e fp σ)
                                               (σ fp var)))
               κ sm)]
       [`(:=-new ,name ,class-name)
        ; =>
-       (state (statement-next stmt) fp (λ (addr)
-                                        (if (equal? addr name)
-                                            `(,class-name ,(gensym 'op))
-                                            (σ addr)))
+       (state (statement-next stmt) fp (λ (fp* addr)
+                                          (if (and (equal? addr name) (fp fp*))
+                                              `(,class-name ,(gensym 'op))
+                                              (σ addr)))
               κ sm)]
       [`(invoke ,name ,args ...)
        ; =>
@@ -935,9 +938,11 @@
                    (statement '(:= x 1)
                               (statement '(label bob)
                                          (statement '(print-debug x)
-                                                    (statement '(goto bob)
-                                                               (statement null null 'Foo)
-                                                               'Foo)
+                                                    (statement '(:= x (+ x 1))
+                                                              (statement '(goto bob)
+                                                                         (statement null null 'Foo)
+                                                                         'Foo)
+                                                              'Foo)
                                                     'Foo)
                                          'Foo)
                               'Foo)
