@@ -819,7 +819,7 @@
       (let ([name (method-name m)])
         (if (equal? name 'main)
             m
-            (find-method-helper (method-next m))))))
+            (find-main-helper (method-next m))))))
 
 (define (find-main program)
   (if (equal? program null)
@@ -864,13 +864,13 @@
                                               `(,class-name ,(gensym 'op))
                                               (σ addr)))
               κ sm)]
-      [`(invoke ,name ,args ...)
+      [`(invoke ,e ,name ,args ...)
        ; =>
-       (let ([m (find-method (statement-class stmt))])
-         (apply-method m name (σ fp '$this) (method-args m) (statement-next stmt) fp σ κ sm))]
+       (let ([m (find-method (statement-class stmt) name)])
+         (apply-method m name (σ fp '$this) args (statement-next stmt) fp σ κ sm))]
       [`(invoke-super ,name ,args ...)
-       (let ([m (find-method (class-extends (statement-class stmt)))])
-         (apply-method m name (σ fp '$this) (method-args m) (statement-next stmt) fp σ κ sm))]
+       (let ([m (find-method (class-extends (statement-class stmt)) name)])
+         (apply-method m name (σ fp '$this) args (statement-next stmt) fp σ κ sm))]
        ; =>
       [`(return ,e)
        ; =>
@@ -974,7 +974,7 @@
 
 ; Should print out 1, 2, 3, ..., 10
 (execute (class 'Foo null null
-           (method 'main '(args)
+           (method 'my-method '()
                    (statement '(:= x 1)
                               (statement '(label loop)
                                          (statement '(print-debug x)
@@ -990,5 +990,9 @@
                                                     'Foo)
                                          'Foo)
                               'Foo)
-                   null)
+                   (method 'main '(args)
+                           (statement '(invoke null my-method)
+                                      (statement '(return null) null 'Foo)
+                                      'Foo)
+                           null))
            null))
