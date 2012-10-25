@@ -952,6 +952,27 @@
 ;           null))
 
 ; Should print out 1, 2, 3, ..., 10
+;(execute (class 'Foo null null
+;           (method 'main '(args)
+;                   (statement '(:= x 1)
+;                              (statement '(label loop)
+;                                         (statement '(print-debug x)
+;                                                    (statement '(:= x (+ x 1))
+;                                                               (statement '(if (= x 11) end) 
+;                                                                          (statement '(goto loop)
+;                                                                                     (statement '(label end)
+;                                                                                                (statement '(return null) null 'Foo)
+;                                                                                                'Foo)
+;                                                                                     'Foo)
+;                                                                          'Foo)
+;                                                              'Foo)
+;                                                    'Foo)
+;                                         'Foo)
+;                              'Foo)
+;                   null)
+;           null))
+
+; Should print out 1, 2, 3, ..., 10
 (execute (class 'Foo null null
            (method 'main '(args)
                    (statement '(:= x 1)
